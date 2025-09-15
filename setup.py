@@ -15,6 +15,12 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/CureQ/CureQ.git",
     packages=setuptools.find_packages(),
+    extras_require={
+        "widgets": [
+            "ipywidgets>=8.1.2",
+            "voila>=0.5.6",
+        ]
+    },
     install_requires=[              # Installs all required libraries to run the pipeline analysis correctly
         "matplotlib>=3.7.3",        # For visualisation plots of the data
         "numpy>=1.26.4",            # For array computing in python

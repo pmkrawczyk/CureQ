@@ -9,9 +9,11 @@ MEAlytics offers high speed spike, burst and network burst detection followed by
 #### [For more information about the analysis or how to use the library, check out the MEAlytics Github pages](https://cureq.github.io/CureQ/).
 
 ## CureQ
+
 This tool was created for the CureQ consortium.<br>
 For more information about the CureQ project, visit https://cureq.nl/
-___
+
+---
 
 ## Install the library
 
@@ -21,15 +23,14 @@ ___
    cd /path/to/home/folder
    ```
 3. Make sure you downloaded **Python**!<br>
-> Check this with ```python --version``` in your CMD. <br>
-> <i>If you don't have Python installed yet, install it by typing ```python``` in your CMD.<br> 
-This will automatically install pip.</i><br>
-> Check this with ```pip --version``` in your CMD.<br>
-> <i>If you don't have pip installed yet, install it by typing ```get-pip.py``` in your CMD.</i><br>
+   > Check this with `python --version` in your CMD. <br> > <i>If you don't have Python installed yet, install it by typing `python` in your CMD.<br>
+   > This will automatically install pip.</i><br>
+   > Check this with `pip --version` in your CMD.<br> > <i>If you don't have pip installed yet, install it by typing `get-pip.py` in your CMD.</i><br>
 4. **Install library with pip**<br>
-Install the MEA analyzer with the following command when you are using Pip:
+   Install the MEA analyzer with the following command when you are using Pip:
+
 ```shell
-pip install CureQ 
+pip install CureQ
 ```
 
 More elaborate and simple installation instructions can be found in the [User Guide](https://cureq.github.io/CureQ/installation.html).<br>
@@ -39,10 +40,12 @@ More elaborate and simple installation instructions can be found in the [User Gu
 ---
 
 ## Library usage
+
 Now you can try the CureQ library functions in your Python environment. <br>
 Import the function you need, call this function and watch how the pipeline analyzes your MEA file!
 
 #### Example for analyzing all MEA wells
+
 ```python
 from CureQ.mea import analyse_wells, get_default_parameters
 
@@ -65,11 +68,13 @@ if __name__ == '__main__':
 ---
 
 ## MEA GUI
+
 Addionally, the CureQ mea library contains a graphical user interface that can be used to perform the analysis. <br>
 The GUI is also used to inspect the raw MEA data and the analysis results. Example visualisations can be found below. <br>
 The GUI can be opened as follows:
 
 #### Opening the GUI
+
 ```python
 from CureQ.GUI.mea_analysis_tool import MEA_GUI
 
@@ -78,20 +83,25 @@ if __name__=="__main__":
 ```
 
 #### Launch from command prompt
+
 Additionally, he GUI can be launched from the command prompt. Simply open the command prompt, and enter “cureq”.
+
 ```shell
 C:\Users>cureq
 Successfully launched MEAlytics GUI
 ```
+
 The output should look like this, and the GUI should appear on your screen.
 
 #### Create shortcuts
+
 This process can be simplified by creating shortcuts that in essence perform the same process. In the command prompt, enter “cureq –create-shortcut”.
 
 ```shell
 C:\Users>cureq --create-shortcut
 Desktop shortcut created at C:\Users\Desktop\CureQ.lnk
 ```
+
 The output should look like this, and a shortcut should appear on your desktop:
 
 ---
@@ -99,6 +109,7 @@ The output should look like this, and a shortcut should appear on your desktop:
 ## MEAlytics functionality
 
 ### Parameters
+
 MEAlytics offers a wide range of parameters that can be used to alter the analysis! However, all parameters have default values that are backed by literature.
 
 ![Parameters](./Example_visualisations/parameters.png)
@@ -161,3 +172,32 @@ Visualise the development of features over time by adding a prefix to your featu
 <!--
 **CureQ/CureQ** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 -->
+
+---
+
+## Run the ipywidgets UI (Jupyter)
+
+An experimental ipywidgets-based UI is available for use in Jupyter notebooks or with Voilà.
+
+- Install optional dependencies:
+
+  - With pip: `pip install "CureQ[widgets]"`
+  - Or add separately: `pip install ipywidgets voila`
+  - In JupyterLab, also enable widgets if needed.
+
+- Launch in a notebook:
+  ```python
+  from CureQ.ipywidgets_ui import CureQApp
+  app = CureQApp()
+  app.show()  # or display(app.widget())
+  ```
+
+Pages currently supported:
+
+- Analyze file: run a single-file analysis with progress and abort.
+- Parameters: view/edit/save analysis parameters.
+- Batch processing: select a folder, choose .h5 files, and run sequentially with per-file progress.
+- Compress/Rechunk: compress one file or all files in a folder (LZF/GZIP).
+- Other pages are stubbed and will arrive in future updates.
+
+Tip: For large files, prefer the "File path" field instead of uploading via the widget.
