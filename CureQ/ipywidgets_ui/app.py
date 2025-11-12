@@ -5,15 +5,32 @@ from typing import Dict, Any, Optional
 import ipywidgets as W
 from IPython.display import display, clear_output
 
-from ..mea import analyse_wells, get_default_parameters
-from ..core._utilities import rechunk_dataset
-from ..core._bandpass import butter_bandpass_filter
-from ..core._threshold import fast_threshold
-from ..core._spike_validation import spike_validation
-from ..core._burst_detection import burst_detection
-from ..core._network_burst_detection import network_burst_detection
-from ..core._plotting import well_electrodes_kde, feature_boxplots, combined_feature_boxplots, features_over_time
-from ..core._features import recalculate_features
+# IMPORTANT: Avoid importing heavy CureQ modules (which require native deps like h5py)
+# at module import time so this UI can load in JupyterLite/Pyodide.
+def _default_parameters() -> Dict[str, Any]:
+    return {
+        'low cutoff': 200,
+        'high cutoff': 3500,
+        'order': 2,
+        'threshold portion': 0.1,
+        'standard deviation multiplier': 5,
+        'rms multiplier': 5,
+        'refractory period': 0.001,
+        'spike validation method': "Noisebased",
+        'exit time': 0.001,
+        'drop amplitude': 5,
+        'max drop': 2,
+        'minimal amount of spikes': 5,
+        'default interval threshold': 100,
+        'max interval threshold': 1000,
+        'burst detection kde bandwidth': 1,
+        'min channels': 0.5,
+        'thresholding method': 'Yen',
+        'nbd kde bandwidth': 0.05,
+        'remove inactive electrodes': True,
+        'activity threshold': 0.1,
+        'use multiprocessing': False,
+    }
 
 
 class CureQApp:
@@ -32,7 +49,19 @@ class CureQApp:
 
     def __init__(self, notebook: bool = True):
         self.notebook = notebook
-        self.parameters: Dict[str, Any] = get_default_parameters()
+        # Try to get real defaults from backend; fall back to lightweight copy if unavailable
+        try:
+            from ..mea import get_default_parameters as _gdp  # heavy import guarded
+            self.parameters: Dict[str, Any] = _gdp()
+        except Exception:
+            self.parameters = _default_parameters()
+        # In JupyterLite/Pyodide, multiprocessing is unavailable. Force-disable.
+        try:
+            import sys
+            if any(k in sys.modules for k in ("pyodide", "js")) or os.environ.get("JUPYTERLITE_RUNTIME"):
+                self.parameters["use multiprocessing"] = False
+        except Exception:
+            pass
         self.state: Dict[str, Any] = {
             "selected_file": None,
             "sampling_rate": None,
@@ -78,8 +107,15 @@ class CureQApp:
         for i, name in enumerate(self.pages.keys()):
             self.tabs.set_title(i, name)
 
+        # Global log panel (visible across tabs)
+        self.log_title = W.HTML("<b>Log</b>")
+        self.log_clear_btn = W.Button(description="Clear log", icon="trash", button_style="")
+        self.log_clear_btn.on_click(lambda _: self._log_clear())
+        self.log_output = W.Textarea(value="", disabled=True, layout=W.Layout(width='100%', height='220px', overflow_y='auto'))
+        log_header = W.HBox([self.log_title, self.log_clear_btn], layout=W.Layout(justify_content='space-between', width='100%'))
+
         # Root
-        self.root = W.VBox([self._global_css, self.title, self.tabs])
+        self.root = W.VBox([self._global_css, self.title, self.tabs, log_header, self.log_output])
         # Prevent horizontal scrollbars on the overall UI
         self.root.layout = W.Layout(width='100%', overflow_x='hidden', box_sizing='border-box')
         self.tabs.layout = W.Layout(width='100%', overflow_x='hidden', box_sizing='border-box')
@@ -89,6 +125,60 @@ class CureQApp:
                 child.layout = W.Layout(width='100%', overflow_x='hidden', box_sizing='border-box')
         except Exception:
             pass
+
+    # ---------- Logging ----------
+    def _log(self, *args):
+        try:
+            msg = " ".join(str(a) for a in args)
+            # Trim if very large
+            cur = self.log_output.value
+            if cur and not cur.endswith("\n"):
+                cur += "\n"
+            new = (cur + msg + "\n")
+            # keep last ~8000 chars to avoid memory bloat
+            if len(new) > 100000:
+                new = new[-80000:]
+            self.log_output.value = new
+        except Exception:
+            pass
+
+    def _log_clear(self):
+        try:
+            self.log_output.value = ""
+        except Exception:
+            pass
+
+    from contextlib import contextmanager
+    @contextmanager
+    def _capture_prints_to_log(self):
+        import builtins
+        original_print = builtins.print
+        def custom_print(*args, **kwargs):
+            # Route all prints to the UI log; suppress cell output
+            try:
+                self._log(*args)
+            except Exception:
+                pass
+        try:
+            builtins.print = custom_print
+            yield
+        finally:
+            builtins.print = original_print
+
+    # ---------- Environment helpers ----------
+    def _is_browser_env(self) -> bool:
+        try:
+            import sys, os
+            return any(k in sys.modules for k in ("pyodide", "js")) or bool(os.environ.get("JUPYTERLITE_RUNTIME"))
+        except Exception:
+            return False
+
+    def _has_h5py(self) -> bool:
+        try:
+            import h5py  # noqa: F401
+            return True
+        except Exception:
+            return False
 
     # ---------- Pages ----------
     def _page_stub(self, name: str):
@@ -172,6 +262,16 @@ class CureQApp:
         # Helper to create wrapping rows to prevent horizontal scrollbars
         wrap = lambda children: W.Box(children, layout=W.Layout(display='flex', flex_flow='row wrap', width='100%'))
 
+        self.progress_label = W.HTML("<b>Progress</b>")
+        # Hide progress in JupyterLite
+        if self._is_browser_env():
+            try:
+                self.progress.layout.display = 'none'
+                self.progress_label.layout.display = 'none'
+                self.progress_info.layout.display = 'none'
+            except Exception:
+                pass
+
         page = W.VBox([
             W.HTML("<b>Analyze a single MEA experiment</b>"),
             W.HTML("Provide either a local file path or upload a small .h5 file (upload not recommended for very large files)."),
@@ -179,7 +279,7 @@ class CureQApp:
             wrap([self.file_picker]),
             wrap([self.sampling_rate, self.electrode_amnt]),
             wrap([self.run_btn, self.abort_btn]),
-            W.HTML("<b>Progress</b>"),
+            self.progress_label,
             self.progress,
             self.progress_info,
             self.output_area,
@@ -255,7 +355,11 @@ class CureQApp:
             self.parameters[k] = w.value
 
     def _reset_params(self, _):
-        self.parameters = get_default_parameters()
+        try:
+            from ..mea import get_default_parameters as _gdp
+            self.parameters = _gdp()
+        except Exception:
+            self.parameters = _default_parameters()
         for k, w in self.param_widgets.items():
             if k in self.parameters:
                 try:
@@ -283,6 +387,16 @@ class CureQApp:
                 clear_output()
                 print("Please upload a .h5 file.")
             return
+        # Persist selection
+        self.state["selected_file"] = sel
+        # Preflight for JupyterLite/browser: ensure h5py is available
+        if not self._has_h5py():
+            with self.output_area:
+                clear_output()
+                print("Analysis requires h5py/native I/O and cannot run in JupyterLite (browser).\n"
+                      "Please use desktop Jupyter or a server-backed JupyterLab environment.")
+            self.progress_info.value = "Unsupported environment"
+            return
         sr = int(self.sampling_rate.value)
         ea = int(self.electrode_amnt.value)
 
@@ -296,10 +410,11 @@ class CureQApp:
 
         def worker():
             try:
-                analyse_wells(sel, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
+                from ..mea import analyse_wells as _analyse_wells
+                with self._capture_prints_to_log():
+                    _analyse_wells(sel, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
             except Exception as e:
-                with self.output_area:
-                    print("Error during analysis:", e)
+                self._log("Error during analysis:", e)
             finally:
                 self.abort_btn.disabled = True
                 self.run_btn.disabled = False
@@ -340,9 +455,28 @@ class CureQApp:
                     except Exception:
                         pass
 
-        t1 = threading.Thread(target=worker, daemon=True)
-        t2 = threading.Thread(target=watcher, daemon=True)
-        t1.start(); t2.start()
+        if self._is_browser_env():
+            # In JupyterLite, avoid threads; run synchronously and poll progress file inline if produced
+            try:
+                from ..mea import analyse_wells as _analyse_wells
+                # Reset progress display
+                self.progress.value = 0.0
+                self.progress_info.value = "Starting..."
+                # Run analysis; backend still writes progress.npy, but UI remains responsive enough in Lite
+                with self._capture_prints_to_log():
+                    _analyse_wells(sel, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
+                # After completion, set to done
+                self.progress.value = 1.0
+                self.progress_info.value = "Finished"
+            except Exception as e:
+                self._log("Error during analysis:", e)
+            finally:
+                self.abort_btn.disabled = True
+                self.run_btn.disabled = False
+        else:
+            t1 = threading.Thread(target=worker, daemon=True)
+            t2 = threading.Thread(target=watcher, daemon=True)
+            t1.start(); t2.start()
 
     # ---------- View results ----------
     def _page_view_results(self):
@@ -423,7 +557,12 @@ class CureQApp:
         return page
 
     def _vr_load(self, _):
-        import json, h5py
+        import json
+        if not self._has_h5py():
+            self.vr_elec_box.children = [W.HTML("<span style='color:#b71c1c'>View Results requires h5py and a Python kernel with filesystem access. This is not available in JupyterLite.</span>")]
+            self.vr_well_box.children = []
+            return
+        import h5py
         folder = Path(self.vr_folder.value.strip())
         raw = Path(self.vr_raw.value.strip())
         if not folder.exists() or not (folder / "parameters.json").exists():
@@ -510,6 +649,7 @@ class CureQApp:
         e_amnt = int(params["electrode amount"]) 
         channel = (well - 1) * e_amnt + electrode_idx - 1
 
+        # Lazy import heavy deps
         import h5py
         try:
             with h5py.File(str(raw), "r") as hf:
@@ -530,18 +670,24 @@ class CureQApp:
             return
 
         import matplotlib.pyplot as plt
-        # Suppress any internal display calls during figure creation
+        # Suppress any internal display calls during figure creation and capture prints to log
         with self._suppress_mpl_display():
-            filt = butter_bandpass_filter(data, params)
-            thr = fast_threshold(filt, params)
-            fig_spk = spike_validation(
-                filt, channel, thr, params,
-                plot_electrodes=True, savedata=False,
-                plot_rectangles=bool(self.se_plot_rect.value)
-            )
-            _, fig_burst = burst_detection(
-                filt, channel, params, plot_electrodes=True, savedata=False
-            )
+            with self._capture_prints_to_log():
+                # Import algorithms lazily to avoid import-time failures in light environments
+                from ..core._bandpass import butter_bandpass_filter
+                from ..core._threshold import fast_threshold
+                from ..core._spike_validation import spike_validation
+                from ..core._burst_detection import burst_detection
+                filt = butter_bandpass_filter(data, params)
+                thr = fast_threshold(filt, params)
+                fig_spk = spike_validation(
+                    filt, channel, thr, params,
+                    plot_electrodes=True, savedata=False,
+                    plot_rectangles=bool(self.se_plot_rect.value)
+                )
+                _, fig_burst = burst_detection(
+                    filt, channel, params, plot_electrodes=True, savedata=False
+                )
 
         # Render figures as PNG images by replacing the container children
         w1 = self._fig_to_img_widget(fig_spk, dpi=140)
@@ -566,10 +712,13 @@ class CureQApp:
         params["nbd kde bandwidth"] = float(self.ww_kde_bw.value)
 
         import matplotlib.pyplot as plt
-        # Suppress internal displays during figure creation
+        # Suppress internal displays during figure creation and capture prints
         with self._suppress_mpl_display():
-            fig_nbd = network_burst_detection([well], params, plot_electrodes=True, savedata=False, save_figures=False)
-            fig_kde = well_electrodes_kde(str(folder), well, params, bandwidth=float(self.ww_elec_kde_bw.value))
+            with self._capture_prints_to_log():
+                from ..core._network_burst_detection import network_burst_detection
+                from ..core._plotting import well_electrodes_kde
+                fig_nbd = network_burst_detection([well], params, plot_electrodes=True, savedata=False, save_figures=False)
+                fig_kde = well_electrodes_kde(str(folder), well, params, bandwidth=float(self.ww_elec_kde_bw.value))
 
         w1 = self._fig_to_img_widget(fig_nbd, dpi=140)
         w2 = self._fig_to_img_widget(fig_kde, dpi=140)
@@ -826,6 +975,9 @@ class CureQApp:
         if not selected:
             self.batch_status.value = "<span style='color:#b71c1c'>No files selected</span>"
             return
+        if not self._has_h5py():
+            self.batch_status.value = "<span style='color:#b71c1c'>Batch processing requires h5py and a full Python environment; not supported in JupyterLite.</span>"
+            return
         sr = int(self.batch_sampling_rate.value)
         ea = int(self.batch_electrode_amnt.value)
 
@@ -857,12 +1009,12 @@ class CureQApp:
                 def worker():
                     nonlocal crashed
                     try:
-                        analyse_wells(f, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
+                        from ..mea import analyse_wells as _analyse_wells
+                        _analyse_wells(f, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
                     except Exception as e:
                         crashed = True
                         bar.bar_style = "danger"
-                        with self.output_area:
-                            print("Error in", f, e)
+                        self._log("Error in", f, e)
 
                 def watcher():
                     progressfile = f"{Path(f).parent}/progress.npy"
@@ -910,7 +1062,28 @@ class CureQApp:
             self.batch_abort_flag = False
             self.batch_status.value = "Batch finished."
 
-        threading.Thread(target=run_seq, daemon=True).start()
+        if self._is_browser_env():
+            # Run synchronously without threads or watchers in JupyterLite
+            try:
+                from ..mea import analyse_wells as _analyse_wells
+                for idx, (f, bar) in enumerate(per_file):
+                    if self.batch_abort_flag:
+                        break
+                    self.batch_status.value = f"Running (browser): {Path(f).name}"
+                    try:
+                        _analyse_wells(f, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
+                        bar.value = 1.0
+                    except Exception as e:
+                        bar.bar_style = "danger"
+                        self._log("Error in", f, e)
+                    self.batch_overall.value = (idx + 1) / len(per_file)
+            finally:
+                self.batch_abort_btn.disabled = True
+                self.batch_run_btn.disabled = False
+                self.batch_abort_flag = False
+                self.batch_status.value = "Batch finished."
+        else:
+            threading.Thread(target=run_seq, daemon=True).start()
 
     # ---------- Compress/Rechunk ----------
     def _page_compress_rechunk(self):
@@ -943,6 +1116,9 @@ class CureQApp:
         if not path:
             self.comp_status.value = "<span style='color:#b71c1c'>Provide a file path</span>"
             return
+        if not self._has_h5py():
+            self.comp_status.value = "<span style='color:#b71c1c'>Compression/Rechunk requires h5py; not supported in JupyterLite.</span>"
+            return
         p = Path(path)
         if not p.exists():
             self.comp_status.value = "<span style='color:#b71c1c'>Path does not exist</span>"
@@ -967,20 +1143,21 @@ class CureQApp:
             ok, fail = [], []
             for f in files:
                 try:
-                    rechunk_dataset(fileadress=f, compression_method=method, compression_level=level, always_compress_files=True)
+                    from ..core._utilities import rechunk_dataset
+                    with self._capture_prints_to_log():
+                        rechunk_dataset(fileadress=f, compression_method=method, compression_level=level, always_compress_files=True)
                     ok.append(f)
                 except Exception as e:
                     fail.append((f, e))
-            with self.comp_output:
-                from pprint import pprint
-                print("Finished compression.")
-                if ok:
-                    print("Compressed:")
-                    pprint(ok)
-                if fail:
-                    print("Failed:")
-                    for f, e in fail:
-                        print(" -", f, "=>", e)
+            from pprint import pformat
+            self._log("Finished compression.")
+            if ok:
+                self._log("Compressed:")
+                self._log(pformat(ok))
+            if fail:
+                self._log("Failed:")
+                for f, e in fail:
+                    self._log(" -", f, "=>", e)
             self.comp_run.disabled = False
             self.comp_status.value = "Done."
 
@@ -1037,6 +1214,7 @@ class CureQApp:
         colors = [c.strip() for c in self.plt_colors.value.split(',') if c.strip()] or None
         try:
             if self.plt_mode.value == "Combine feature boxplots":
+                from ..core._plotting import combined_feature_boxplots
                 pdf = combined_feature_boxplots(
                     folder=folder,
                     labels=labels,
@@ -1047,6 +1225,7 @@ class CureQApp:
                     well_amnt=int(self.plt_well_amnt.value),
                 )
             else:
+                from ..core._plotting import features_over_time
                 pdf = features_over_time(
                     folder=folder,
                     labels=labels,
@@ -1221,7 +1400,9 @@ class CureQApp:
                 try:
                     with open(Path(folder) / "parameters.json", "r") as jf:
                         params = json.load(jf)
-                    recalculate_features(outputfolder=folder, well_amnt=self.ee_wells, electrode_amnt=self.ee_elec, electrodes=cfg, sampling_rate=params["sampling rate"], measurements=params["measurements"])
+                    from ..core._features import recalculate_features
+                    with self._capture_prints_to_log():
+                        recalculate_features(outputfolder=folder, well_amnt=self.ee_wells, electrode_amnt=self.ee_elec, electrodes=cfg, sampling_rate=params["sampling rate"], measurements=params["measurements"])
                     ok.append(f)
                 except Exception as e:
                     fail.append((f, e))

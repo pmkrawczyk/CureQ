@@ -1,13 +1,20 @@
 # Imports
 import time
-import multiprocessing
 import gc
 import json
 import datetime
 import os
 from importlib.metadata import version
-from multiprocessing.managers import SharedMemoryManager
 from pathlib import Path
+
+# Multiprocessing is not available in JupyterLite/Pyodide. Guard the import
+# so importing this module doesn't fail in browser environments.
+try:
+    import multiprocessing  # type: ignore
+    _MP_AVAILABLE = True
+except Exception:  # pragma: no cover - environment-specific
+    multiprocessing = None  # type: ignore
+    _MP_AVAILABLE = False
 
 # External libraries
 import numpy as np
@@ -157,7 +164,10 @@ def analyse_wells(fileadress, sampling_rate, electrode_amnt, parameters={}):
 
     analysis_time=time.time()
 
-    lib_version=version('CureQ')
+    try:
+        lib_version=version('CureQ')
+    except Exception:
+        lib_version="unknown"
     print(f"MEA Analysis Tool - Version: {lib_version}")
     print(f"Analyzing: {fileadress}")
     
@@ -173,12 +183,14 @@ def analyse_wells(fileadress, sampling_rate, electrode_amnt, parameters={}):
     outputpath=os.path.join(parent_dir, output_folder)
     os.makedirs(outputpath)
 
-    # Create a file to commmunicate the progress with the GUI
-    progressfile=f'{os.path.split(fileadress)[0]}/progress.npy'
+    # Create a file to communicate progress with the GUI
+    # Use Path-based join so relative inputs write to './progress.npy' instead of '/progress.npy'
+    progressfile = str(Path(fileadress).parent / 'progress.npy')
     np.save(progressfile, ['starting'])
     
     # Call the freeze_support function to make sure multiprocessing still works properly if the algorithm is frozen
-    multiprocessing.freeze_support()
+    if multiprocessing is not None:
+        multiprocessing.freeze_support()
 
     # Open the raw data
     print("Opening the data")
@@ -251,6 +263,9 @@ def analyse_wells(fileadress, sampling_rate, electrode_amnt, parameters={}):
             shape=dataset[:electrode_amnt].shape
             _type=dataset.dtype
             measurements=dataset.shape[1]
+        # Guard against environments without multiprocessing shared memory
+        if multiprocessing is None:
+            raise RuntimeError("Multiprocessing is not available in this environment; set 'use multiprocessing' to False.")
         sharedmemory=multiprocessing.shared_memory.SharedMemory(create=True, size=np_size)
         # Communicate file size with GUI
         np.save(progressfile, [(0)*electrode_amnt, datashape[0]])
