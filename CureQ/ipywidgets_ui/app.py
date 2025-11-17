@@ -68,6 +68,7 @@ class CureQApp:
             "electrode_amnt": None,
             "output_folder": None,
         }
+        self._last_progress_msg: Optional[str] = None
         # Build UI
         self._build()
 
@@ -147,6 +148,18 @@ class CureQApp:
             self.log_output.value = ""
         except Exception:
             pass
+
+    def _reset_progress_log(self):
+        self._last_progress_msg = None
+
+    def _log_progress(self, message: str):
+        msg = str(message).strip()
+        if not msg:
+            return
+        if getattr(self, "_last_progress_msg", None) == msg:
+            return
+        self._last_progress_msg = msg
+        self._log(msg)
 
     from contextlib import contextmanager
     @contextmanager
@@ -242,35 +255,11 @@ class CureQApp:
         )
         self.abort_btn.on_click(self._on_abort)
 
-        self.progress = W.FloatProgress(
-            description="",
-            min=0.0,
-            max=1.0,
-            value=0.0,
-            bar_style="info",
-            layout=W.Layout(width="100%"),
-        )
-        # Optional: tweak bar color via style
-        try:
-            self.progress.style = {"bar_color": "#3f51b5"}
-        except Exception:
-            pass
-        self.progress_info = W.HTML("")
         # Hide any internal horizontal scrollbar in output
         self.output_area = W.Output(layout=W.Layout(width='100%', overflow_x='hidden'))
 
         # Helper to create wrapping rows to prevent horizontal scrollbars
         wrap = lambda children: W.Box(children, layout=W.Layout(display='flex', flex_flow='row wrap', width='100%'))
-
-        self.progress_label = W.HTML("<b>Progress</b>")
-        # Hide progress in JupyterLite
-        if self._is_browser_env():
-            try:
-                self.progress.layout.display = 'none'
-                self.progress_label.layout.display = 'none'
-                self.progress_info.layout.display = 'none'
-            except Exception:
-                pass
 
         page = W.VBox([
             W.HTML("<b>Analyze a single MEA experiment</b>"),
@@ -279,9 +268,6 @@ class CureQApp:
             wrap([self.file_picker]),
             wrap([self.sampling_rate, self.electrode_amnt]),
             wrap([self.run_btn, self.abort_btn]),
-            self.progress_label,
-            self.progress,
-            self.progress_info,
             self.output_area,
         ])
         page.layout = W.Layout(width='100%', overflow_x='hidden')
@@ -376,9 +362,9 @@ class CureQApp:
         try:
             import numpy as np
             np.save(progressfile, ["abort"])
-            self.progress_info.value = "<span style='color:#b71c1c'>Aborting analysis...</span>"
-        except Exception:
-            pass
+            self._log("Aborting analysis ...")
+        except Exception as e:
+            self._log("Failed to signal abort:", e)
 
     def _on_run(self, _):
         sel = self.file_path_text.value.strip() or self.state.get("selected_file")
@@ -395,15 +381,15 @@ class CureQApp:
                 clear_output()
                 print("Analysis requires h5py/native I/O and cannot run in JupyterLite (browser).\n"
                       "Please use desktop Jupyter or a server-backed JupyterLab environment.")
-            self.progress_info.value = "Unsupported environment"
+            self._log("Unsupported environment: analysis requires h5py/native I/O and filesystem access.")
             return
         sr = int(self.sampling_rate.value)
         ea = int(self.electrode_amnt.value)
 
         self.run_btn.disabled = True
         self.abort_btn.disabled = False
-        self.progress.value = 0.0
-        self.progress_info.value = "Starting..."
+        self._reset_progress_log()
+        self._log_progress("Starting analysis...")
         self.output_area.clear_output()
 
         import threading, time, numpy as np
@@ -435,23 +421,21 @@ class CureQApp:
                     continue
                 status = arr[0]
                 if status == "done":
-                    self.progress.value = 1.0
-                    self.progress_info.value = f"Finished in {time.time()-start:.1f}s"
+                    self._log_progress(f"Finished in {time.time()-start:.1f}s")
                     break
                 elif status == "rechunking":
-                    self.progress_info.value = "Rechunking data..."
+                    self._log_progress("Rechunking data...")
                 elif status == "starting":
-                    self.progress_info.value = "Loading data..."
+                    self._log_progress("Loading data...")
                 elif status == "abort":
-                    self.progress_info.value = "Aborting..."
+                    self._log_progress("Aborting...")
                 elif status == "stopped":
-                    self.progress_info.value = "Stopped."
+                    self._log_progress("Stopped.")
                     break
                 else:
                     try:
                         cur, total = arr
-                        self.progress.value = float(cur) / float(total)
-                        self.progress_info.value = f"Analyzing channels: {cur}/{total}"
+                        self._log_progress(f"Analyzing channels: {cur}/{total}")
                     except Exception:
                         pass
 
@@ -459,15 +443,10 @@ class CureQApp:
             # In JupyterLite, avoid threads; run synchronously and poll progress file inline if produced
             try:
                 from ..mea import analyse_wells as _analyse_wells
-                # Reset progress display
-                self.progress.value = 0.0
-                self.progress_info.value = "Starting..."
                 # Run analysis; backend still writes progress.npy, but UI remains responsive enough in Lite
                 with self._capture_prints_to_log():
                     _analyse_wells(sel, sampling_rate=sr, electrode_amnt=ea, parameters=self.parameters)
-                # After completion, set to done
-                self.progress.value = 1.0
-                self.progress_info.value = "Finished"
+                self._log_progress("Finished.")
             except Exception as e:
                 self._log("Error during analysis:", e)
             finally:
@@ -899,7 +878,12 @@ class CureQApp:
             fig.savefig(buf, format='png', dpi=int(dpi), bbox_inches='tight')
             data = buf.getvalue()
             b64 = base64.b64encode(data).decode('ascii')
-            html = f"<img src='data:image/png;base64,{b64}' style='max-width:100%; height:auto; display:block;'/>"
+            html = (
+                "<div style='width:100%; display:flex; justify-content:flex-start;'>"
+                f"<img src='data:image/png;base64,{b64}' "
+                "style='width:600px; max-width:100%; height:auto; display:block;'/>"
+                "</div>"
+            )
             with out_widget:
                 display(HTML(html))
         finally:
@@ -914,7 +898,16 @@ class CureQApp:
             fig.savefig(buf, format='png', dpi=int(dpi), bbox_inches='tight')
             data = buf.getvalue()
             b64 = base64.b64encode(data).decode('ascii')
-            return W.HTML(f"<img src='data:image/png;base64,{b64}' style='max-width:100%; height:auto; display:block;' />")
+            widget = W.HTML(
+                (
+                    "<div style='width:100%; display:flex; justify-content:flex-start;'>"
+                    f"<img src='data:image/png;base64,{b64}' "
+                    "style='width:600px; max-width:100%; height:auto; display:block;'/>"
+                    "</div>"
+                )
+            )
+            widget.layout = W.Layout(width='100%', min_width='600px')
+            return widget
         finally:
             buf.close()
 

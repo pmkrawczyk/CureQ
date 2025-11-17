@@ -297,7 +297,8 @@ def features_over_time(folder, labels, div_prefix, output_fileadress, colors=Non
     def sort_filenames_by_number(filenames, prefix):
         sorted_filenames = []
         for filename in filenames:
-            match = re.search(f"{prefix}(\d+)", filename)
+            pattern = rf"{re.escape(prefix)}(\d+)"
+            match = re.search(pattern, filename)
             if match:
                 num_value = int(match.group(1))
                 sorted_filenames.append((num_value, filename))
